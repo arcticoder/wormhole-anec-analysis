@@ -15,6 +15,7 @@ import numpy as np
 from typing import Tuple, List, Dict
 from ..metrics.morris_thorne import MorrisThorne
 from ..stress_energy.einstein_solver import EinsteinSolver
+from ..metrics.coordinate_mapping import build_r_of_l_mapper
 
 
 class WormholeANECIntegrator:
@@ -147,7 +148,7 @@ class WormholeANECIntegrator:
         return T_kk
     
     def compute_anec_integral(self, l_start: float, l_end: float, 
-                             n_points: int = 1000) -> Dict[str, float]:
+                             n_points: int = 1000) -> Dict:
         """
         Compute ANEC integral for throat-crossing geodesic.
         
@@ -177,16 +178,15 @@ class WormholeANECIntegrator:
         valid_mask = np.isfinite(T_kk)
         if np.sum(valid_mask) < 2:
             return {
-                "anec_integral_J": np.nan,
+                "anec_integral_J": float("nan"),
                 "anec_violated": False,
-                "median_T_kk": np.nan,
-                "min_T_kk": np.nan,
-                "max_T_kk": np.nan,
+                "median_T_kk": float("nan"),
+                "min_T_kk": float("nan"),
+                "max_T_kk": float("nan"),
                 "negative_fraction": 0.0,
-                "l_start": l_start,
-                "l_end": l_end_safe,
-                "n_points": n_points,
-                "warning": "Too few valid points for integration"
+                "l_start": float(l_start),
+                "l_end": float(l_end_safe),
+                "n_points": int(n_points)
             }
         
         T_kk_valid = T_kk[valid_mask]
@@ -202,15 +202,15 @@ class WormholeANECIntegrator:
         negative_fraction = np.sum(T_kk_valid < 0) / len(T_kk_valid)
         
         return {
-            "anec_integral_J": anec_integral,
-            "anec_violated": anec_integral < 0,
-            "median_T_kk": median_T_kk,
-            "min_T_kk": min_T_kk,
-            "max_T_kk": max_T_kk,
-            "negative_fraction": negative_fraction,
-            "l_start": l_start,
-            "l_end": l_end_safe,
-            "n_points": n_points
+            "anec_integral_J": float(anec_integral),
+            "anec_violated": bool(anec_integral < 0),
+            "median_T_kk": float(median_T_kk),
+            "min_T_kk": float(min_T_kk),
+            "max_T_kk": float(max_T_kk),
+            "negative_fraction": float(negative_fraction),
+            "l_start": float(l_start),
+            "l_end": float(l_end_safe),
+            "n_points": int(n_points)
         }
     
     def anec_throat_sweep(self, l_range_factor: float = 5.0, 
@@ -268,3 +268,81 @@ class WormholeANECIntegrator:
             "all_violated": all(violations),
             "any_violated": any(violations)
         }
+
+    # New: Proper-throat-crossing ANEC in l-coordinate
+    def compute_anec_crossing(self, r_max_factor: float = 5.0, n_points: int = 4001) -> Dict:
+        """
+        Compute ANEC integral across the throat using proper radial coordinate l.
+
+        Strategy:
+        - Build r(l) mapper from r0 to r_max
+        - Integrate along l in [-L, +L] where L = l(r_max)
+        - Use integrand (up to affine scaling): e^{-Phi(r(l))} [p_r(r(l)) - rho(r(l))]
+        - Integrate over dl; sign indicates (violation vs not)
+
+        Args:
+            r_max_factor: Maximum areal radius as multiple of r0
+            n_points: Number of l-grid points (odd number recommended)
+
+        Returns:
+            Dictionary with ANEC value and diagnostics
+        """
+        r0 = self.wh.params.l0
+        r_max = r_max_factor * r0
+
+        # Build r(l) mapper
+        r_of_l = build_r_of_l_mapper(lambda r: self.wh.b(np.atleast_1d(r)), r0, r_max)
+
+        # Determine L = l(r_max)
+        # Sample positive l at r_max by calling mapper inverse-like: approximate by stepping to large l
+        # We'll estimate L by evaluating l_of_r via mapping table indirectly: sample a few l until r close to r_max
+        # Simpler: build a small grid and pick l so that r(l) ~ r_max
+        l_pos = np.linspace(0.0, 10.0 * r_max, 5000)
+        r_probe = r_of_l(l_pos)
+        # Find index where r is closest to r_max
+        idx = int(np.argmax(r_probe))
+        L = l_pos[idx]
+
+        # Construct symmetric l-grid
+        l_grid = np.linspace(-L, L, n_points)
+        r_grid = r_of_l(l_grid)
+
+        # Evaluate fields at r(l)
+        Phi = self.wh.Phi(r_grid)
+        T = self.solver.stress_energy_tensor(r_grid)
+        rho = T["rho"]
+        p_r = T["p_r"]
+
+        # Integrand proportional to e^{-Phi} (p_r - rho)
+        integrand = np.exp(-Phi) * (p_r - rho)
+
+        # Finite-mask to avoid any numerical pathologies
+        mask = np.isfinite(integrand)
+        if np.count_nonzero(mask) < 3:
+            return {
+                "anec_crossing": float("nan"),
+                "anec_violated": False,
+                "negative_fraction": 0.0,
+                "L": 0.0,
+                "r_max": float(r_max),
+                "n_points": int(n_points)
+            }
+
+        anec_val = np.trapz(integrand[mask], l_grid[mask])
+        neg_frac = float(np.mean(integrand[mask] < 0))
+
+        return {
+            "anec_crossing": float(anec_val),
+            "anec_violated": bool(anec_val < 0),
+            "negative_fraction": neg_frac,
+            "L": float(L),
+            "r_max": float(r_max),
+            "n_points": int(n_points)
+        }
+
+    def crossing_sweep(self, configs: List[Dict] | None = None) -> Dict:
+        """
+        Optional helper to compute crossing ANEC for current wormhole only.
+        Provided for API symmetry.
+        """
+        return self.compute_anec_crossing()
