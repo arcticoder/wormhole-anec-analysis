@@ -124,7 +124,7 @@ Traversability conditions:
 **Next Research Direction**: 
 Instead of trying to source exotic stress-energy, explore whether the **gravitational coupling constant G can be made field-dependent** through coherence/phase effects, making curvature "cheaper" energetically.
 
-→ See Phase D: [Coherence-Modulated Gravity Coupling](https://github.com/arcticoder/coherence-gravity-coupling) (if pursued)
+→ See Phase D: [Coherence-Modulated Gravity Coupling](https://github.com/DawsonInstitute/coherence-gravity-coupling) (if pursued)
 
 ### ✅ Week 1: COMPLETE - Major Breakthrough
 
